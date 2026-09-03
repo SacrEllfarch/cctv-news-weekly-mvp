@@ -9,7 +9,7 @@ if (-not (Test-Path $venvPython)) {
     python -m venv (Join-Path $projectRoot ".venv")
 }
 & $venvPython -m pip install --upgrade pip
-& $venvPython -m pip install -r (Join-Path $projectRoot "requirements-desktop.txt")
+& $venvPython -m pip install --upgrade -r (Join-Path $projectRoot "requirements-desktop.txt")
 
 if ([string]::IsNullOrWhiteSpace($FfmpegPath)) {
     $FfmpegPath = (Get-Command ffmpeg -ErrorAction Stop).Source

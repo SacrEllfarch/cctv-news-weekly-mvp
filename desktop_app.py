@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import sys
 import threading
+import os
 from pathlib import Path
+
+# PyInstaller's onedir layout keeps Qt DLLs under _internal/PySide6. Register
+# those directories before importing the extension modules on Windows.
+if sys.platform == "win32":
+    _bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    for _dll_dir in (_bundle_root / "PySide6", _bundle_root / "shiboken6"):
+        if _dll_dir.is_dir():
+            os.add_dll_directory(str(_dll_dir))
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
