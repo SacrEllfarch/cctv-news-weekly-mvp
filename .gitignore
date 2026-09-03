@@ -4,3 +4,7 @@ __pycache__/
 downloads/
 *.part.mp4
 *.log
+.venv/
+build/
+dist/
+*.spec
