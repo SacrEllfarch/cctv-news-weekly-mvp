@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from cctv_news_weekly_core import (
     CctvError, DownloadCanceled, Episode, ResolvedEpisode, StreamVariant,
-    bundled_ffmpeg_path, desktop_path, download_variant, list_episodes, next_available_path,
+    bundled_ffmpeg_path, bundled_ffprobe_path, desktop_path, download_variant, list_episodes, next_available_path,
     resolve_episode, safe_filename,
 )
 
@@ -53,7 +53,7 @@ class ResolveWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            self.signals.loaded.emit(resolve_episode(self.episode, timeout=12))
+            self.signals.loaded.emit(resolve_episode(self.episode, timeout=12, ffprobe_path=bundled_ffprobe_path()))
         except Exception as exc:
             self.signals.error.emit(str(exc))
 

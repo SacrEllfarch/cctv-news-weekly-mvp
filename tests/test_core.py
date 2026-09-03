@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cctv_news_weekly_core import CctvError, choose_variant, desktop_path, next_available_path, parse_duration, parse_master_playlist, rewrite_to_clean_hls_cdn, safe_filename
+from cctv_news_weekly_core import CctvError, StreamVariant, align_variants, choose_variant, desktop_path, next_available_path, parse_duration, parse_master_playlist, rewrite_to_clean_hls_cdn, safe_filename
 
 
 def test_parse_master_playlist_and_quality_labels():
@@ -47,3 +47,15 @@ def test_duration_parsing():
 
 def test_desktop_path_has_desktop_name():
     assert desktop_path().name.lower() == "desktop"
+
+
+def test_align_variants_uses_measured_resolution(monkeypatch):
+    variants = [
+        StreamVariant("流畅", 460800, "480x270", "https://cdn/450.m3u8"),
+        StreamVariant("标清", 870400, "640x360", "https://cdn/850.m3u8"),
+        StreamVariant("高清", 1228800, "1280x720", "https://cdn/1200.m3u8"),
+    ]
+    measured = {"450": (480, 270), "850": (640, 360), "1200": (480, 270)}
+    monkeypatch.setattr("cctv_news_weekly_core.probe_variant_resolution", lambda variant, *_: measured[variant.url.split("/")[-1].split(".")[0]])
+    aligned = align_variants(variants, "ffprobe")
+    assert [(item.quality, item.resolution) for item in aligned] == [("流畅", "480x270"), ("标清", "640x360")]

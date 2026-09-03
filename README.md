@@ -67,6 +67,7 @@ python .\cctv_news_weekly.py --episode-url "https://tv.cctv.com/2026/08/29/VIDEh
 3. 请求 `getHttpVideoInfo.do` 获取元数据和公开 HLS 播放列表。
 4. 解析清晰度、码率、分辨率和相对分片地址。
 5. 下载时优先使用接口返回的常规公开 HLS CDN；部分 H5 CDN 节点可能返回损坏 TS 分片，程序会改用同 GUID 的常规 HLS 路径。
-6. 由 FFmpeg 合并 HLS 分片并输出 MP4，失败时保留临时文件。
+6. 使用 ffprobe 探测每个档位的真实视频分辨率，界面只显示实际可下载的清晰度；重复分辨率会合并，避免把低清流标为超清。
+7. 由 FFmpeg 合并 HLS 分片并输出 MP4，失败时保留临时文件。
 
 仅建议下载你有权保存的内容，遵守央视网站条款和版权要求。

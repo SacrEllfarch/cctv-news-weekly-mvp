@@ -248,7 +248,58 @@ def rewrite_to_clean_hls_cdn(variants: list[StreamVariant], hls_url: str | None)
     return rewritten
 
 
-def resolve_episode(episode: Episode, timeout: float = 30) -> ResolvedEpisode:
+def bundled_ffprobe_path() -> str:
+    """Return the packaged ffprobe path, or the system command."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    candidate = bundle_root / "bin" / "ffprobe.exe"
+    return str(candidate) if candidate.is_file() else "ffprobe"
+
+
+def probe_variant_resolution(variant: StreamVariant, ffprobe_path: str, timeout: float = 10) -> tuple[int, int] | None:
+    if shutil.which(ffprobe_path) is None and not Path(ffprobe_path).exists():
+        return None
+    command = [
+        ffprobe_path, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0", variant.url,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=max(3, timeout), check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"(\d+)\s*,\s*(\d+)", result.stdout)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def align_variants(variants: list[StreamVariant], ffprobe_path: str | None = None, timeout: float = 10) -> list[StreamVariant]:
+    """Replace nominal playlist resolutions with actual downloadable sizes."""
+    if not ffprobe_path:
+        return variants
+    probed: list[tuple[StreamVariant, tuple[int, int]]] = []
+    for variant in variants:
+        resolution = probe_variant_resolution(variant, ffprobe_path, timeout)
+        if resolution:
+            probed.append((variant, resolution))
+    if not probed:
+        return variants
+
+    # Keep one efficient rendition for duplicate effective resolutions. A true
+    # 720p source may legitimately have separate HD and UHD bitrates, so retain
+    # both only when the measured resolution is actually 1280x720 or larger.
+    groups: dict[tuple[int, int], list[tuple[StreamVariant, tuple[int, int]]]] = {}
+    for item in probed:
+        groups.setdefault(item[1], []).append(item)
+    aligned: list[StreamVariant] = []
+    for resolution, items in sorted(groups.items(), key=lambda pair: (pair[0][0] * pair[0][1], pair[1][0][0].bandwidth)):
+        items.sort(key=lambda item: item[0].bandwidth)
+        keep = items if resolution[0] >= 1280 and len(items) > 1 else [items[0]]
+        labels = ("高清", "超清") if len(keep) == 2 and resolution[0] >= 1280 else (("高清",) if resolution[0] >= 1280 else (("标清",) if resolution[0] >= 640 else ("流畅",)))
+        for index, (variant, _) in enumerate(keep):
+            label = labels[min(index, len(labels) - 1)]
+            aligned.append(StreamVariant(label, variant.bandwidth, f"{resolution[0]}x{resolution[1]}", variant.url))
+    return aligned
+
+
+def resolve_episode(episode: Episode, timeout: float = 30, ffprobe_path: str | None = None) -> ResolvedEpisode:
     guid = episode.guid or extract_guid(fetch_text(episode.url, timeout))
     info = fetch_video_info(guid, timeout)
     manifest = info.get("manifest") or {}
@@ -264,6 +315,7 @@ def resolve_episode(episode: Episode, timeout: float = 30) -> ResolvedEpisode:
             last_error = exc
     if not variants:
         raise last_error or CctvError("没有可用的 HLS 播放列表。")
+    variants = align_variants(variants, ffprobe_path, min(timeout, 10))
     duration = parse_duration((info.get("video") or {}).get("totalLength") or info.get("len") or episode.duration)
     return ResolvedEpisode(episode, guid, info, tuple(variants), duration)
 
