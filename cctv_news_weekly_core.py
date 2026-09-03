@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -86,13 +87,18 @@ class LinkParser(HTMLParser):
             self._text = []
 
 
-def fetch_bytes(url: str, timeout: float = 30) -> bytes:
+def fetch_bytes(url: str, timeout: float = 30, attempts: int = 2) -> bytes:
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except Exception as exc:
-        raise CctvError(f"请求失败: {url}\n{exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < max(1, attempts):
+                time.sleep(0.4 * (attempt + 1))
+    raise CctvError(f"请求失败（已重试 {max(1, attempts)} 次）: {url}\n{last_error}") from last_error
 
 
 def fetch_text(url: str, timeout: float = 30) -> str:
@@ -245,9 +251,19 @@ def rewrite_to_clean_hls_cdn(variants: list[StreamVariant], hls_url: str | None)
 def resolve_episode(episode: Episode, timeout: float = 30) -> ResolvedEpisode:
     guid = episode.guid or extract_guid(fetch_text(episode.url, timeout))
     info = fetch_video_info(guid, timeout)
-    master_url = get_master_url(info)
-    variants = parse_master_playlist(master_url, fetch_text(master_url, timeout))
-    variants = rewrite_to_clean_hls_cdn(variants, info.get("hls_url"))
+    manifest = info.get("manifest") or {}
+    master_urls = [manifest.get("hls_h5e_url"), info.get("hls_url")]
+    last_error: CctvError | None = None
+    variants: list[StreamVariant] = []
+    for master_url in dict.fromkeys(url for url in master_urls if isinstance(url, str) and url):
+        try:
+            variants = parse_master_playlist(master_url, fetch_text(master_url, timeout))
+            variants = rewrite_to_clean_hls_cdn(variants, info.get("hls_url"))
+            break
+        except CctvError as exc:
+            last_error = exc
+    if not variants:
+        raise last_error or CctvError("没有可用的 HLS 播放列表。")
     duration = parse_duration((info.get("video") or {}).get("totalLength") or info.get("len") or episode.duration)
     return ResolvedEpisode(episode, guid, info, tuple(variants), duration)
 

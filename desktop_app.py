@@ -35,7 +35,7 @@ class ListWorker(QRunnable):
     def run(self) -> None:
         try:
             self.signals.loaded.emit(list_episodes(20))
-        except CctvError as exc:
+        except Exception as exc:
             self.signals.error.emit(str(exc))
 
 
@@ -53,8 +53,8 @@ class ResolveWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            self.signals.loaded.emit(resolve_episode(self.episode))
-        except CctvError as exc:
+            self.signals.loaded.emit(resolve_episode(self.episode, timeout=12))
+        except Exception as exc:
             self.signals.error.emit(str(exc))
 
 
@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self.episodes: list[Episode] = []
         self.resolved: ResolvedEpisode | None = None
         self.download_worker: DownloadWorker | None = None
+        self.resolve_worker: ResolveWorker | None = None
         self.resolve_generation = 0
         self._build_ui()
         self.refresh_episodes()
@@ -186,14 +187,16 @@ class MainWindow(QMainWindow):
         self.download_button.setEnabled(False)
         self.status_label.setText("正在解析视频清晰度…")
         worker = ResolveWorker(self.episodes[row])
+        self.resolve_worker = worker
         worker.signals.loaded.connect(lambda resolved, expected=generation: self.episode_resolved(resolved, expected))
-        worker.signals.error.connect(self.operation_error)
+        worker.signals.error.connect(lambda message, expected=generation: self.resolve_error(message, expected))
         self.pool.start(worker)
 
     @Slot(object)
     def episode_resolved(self, resolved: ResolvedEpisode, generation: int | None = None) -> None:
         if generation is not None and generation != self.resolve_generation:
             return
+        self.resolve_worker = None
         self.resolved = resolved
         self.quality_combo.clear()
         for variant in resolved.variants:
@@ -202,6 +205,13 @@ class MainWindow(QMainWindow):
         self.quality_combo.setCurrentIndex(max(0, self.quality_combo.count() - 1))
         self.download_button.setEnabled(True)
         self.status_label.setText("已准备下载")
+
+    @Slot(str, int)
+    def resolve_error(self, message: str, generation: int) -> None:
+        if generation != self.resolve_generation:
+            return
+        self.resolve_worker = None
+        self.operation_error(message)
 
     @Slot()
     def choose_directory(self) -> None:
