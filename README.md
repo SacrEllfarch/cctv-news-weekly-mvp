@@ -50,6 +50,8 @@ python .\cctv_news_weekly.py --episode-url "https://tv.cctv.com/2026/08/29/VIDEh
 .\.venv\Scripts\python.exe .\desktop_app.py
 ```
 
+Windows 用户也可以双击 `start_desktop.cmd`。不要使用系统中关联到其他 Python/Qt 环境的 `desktop_app.py` 文件关联启动。
+
 构建 Windows 便携包，FFmpeg 会从 PATH 复制进构建产物：
 
 ```powershell

@@ -6,13 +6,19 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
-from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
-)
+try:
+    from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtWidgets import (
+        QApplication, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+        QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
+        QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    )
+except (ImportError, OSError) as exc:
+    raise SystemExit(
+        "无法加载 PySide6。请使用项目虚拟环境启动：start_desktop.cmd，"
+        "或先运行 build_desktop.ps1 安装桌面依赖。"
+    ) from exc
 
 from cctv_news_weekly_core import (
     CctvError, DownloadCanceled, Episode, ResolvedEpisode, StreamVariant,
