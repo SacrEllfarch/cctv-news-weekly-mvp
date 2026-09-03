@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 import re
 import shutil
@@ -13,13 +12,11 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-INDEX_URL = "https://tv.cctv.com/lm/xwzk/tongyong/index.shtml"
 COLUMN_ID = "TOPC1451559180488841"
 VIDEO_LIST_URL = "https://api.cntv.cn/NewVideo/getVideoListByColumn?id={column_id}&n=20&sort=desc&p=1&d=&mode=0&serviceId=tvcctv&callback=cctvMvp"
 VIDEO_INFO_URL = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={guid}&tai=ipad&client=html5&im=1"
@@ -27,7 +24,6 @@ USER_AGENT = "cctv-news-weekly-desktop/0.2 (+personal-use)"
 QUALITY_NAMES = ("流畅", "标清", "高清", "超清")
 QUALITY_CODES = {"450", "850", "1200", "2000"}
 GUID_RE = re.compile(r'\bvar\s+guid\s*=\s*["\']([0-9a-f]{32})["\']', re.I)
-EPISODE_RE = re.compile(r"https?://tv\.cctv\.com/(\d{4})/(\d{2})/(\d{2})/VIDE[A-Za-z0-9]+\.shtml")
 
 
 class CctvError(RuntimeError):
@@ -36,6 +32,19 @@ class CctvError(RuntimeError):
 
 class DownloadCanceled(CctvError):
     """Raised when the user cancels an active FFmpeg job."""
+
+
+def hidden_subprocess_options() -> dict:
+    """Prevent FFmpeg helpers from flashing console windows on Windows."""
+    if sys.platform != "win32":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
 
 
 @dataclass(frozen=True)
@@ -62,29 +71,6 @@ class ResolvedEpisode:
     info: dict
     variants: tuple[StreamVariant, ...]
     duration_seconds: float
-
-
-class LinkParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.links: list[tuple[str, str]] = []
-        self._href: str | None = None
-        self._text: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() == "a":
-            self._href = dict(attrs).get("href")
-            self._text = []
-
-    def handle_data(self, data: str) -> None:
-        if self._href is not None:
-            self._text.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "a" and self._href is not None:
-            self.links.append((self._href, "".join(self._text).strip()))
-            self._href = None
-            self._text = []
 
 
 def fetch_bytes(url: str, timeout: float = 30, attempts: int = 2) -> bytes:
@@ -122,43 +108,23 @@ def fetch_jsonp(url: str, timeout: float = 30) -> dict:
         raise CctvError("央视列表接口返回的 JSONP 内容无法解析。") from exc
 
 
-def parse_episode_links(index_html: str) -> list[Episode]:
-    parser = LinkParser()
-    parser.feed(index_html)
-    result: dict[str, Episode] = {}
-    for href, text in parser.links:
-        href, text = html.unescape(href), html.unescape(text)
-        match = EPISODE_RE.search(href)
-        if not match or "新闻周刊" not in text:
-            continue
-        result[href] = Episode(text, href, datetime(*map(int, match.groups())))
-    return sorted(result.values(), key=lambda item: item.date, reverse=True)
-
-
 def list_episodes(limit: int = 20, timeout: float = 30) -> list[Episode]:
     if limit < 1:
         return []
-    try:
-        payload = fetch_jsonp(VIDEO_LIST_URL.format(column_id=COLUMN_ID), timeout)
-        rows = (payload.get("data") or {}).get("list") or []
-        episodes: list[Episode] = []
-        for row in rows:
-            title, url = str(row.get("title") or ""), str(row.get("url") or "")
-            if "新闻周刊" not in title or not url:
-                continue
-            try:
-                date = datetime.strptime(str(row.get("time") or "")[:10], "%Y-%m-%d")
-            except ValueError:
-                continue
-            episodes.append(Episode(title, url, date, str(row.get("guid") or "") or None, str(row.get("length") or "") or None))
-        if episodes:
-            return sorted(episodes, key=lambda item: item.date, reverse=True)[:limit]
-    except CctvError:
-        pass
-    fallback = parse_episode_links(fetch_text(INDEX_URL, timeout))[:limit]
-    if not fallback:
-        raise CctvError("央视列表接口和栏目页都没有找到《新闻周刊》节目。")
-    return fallback
+    payload = fetch_jsonp(VIDEO_LIST_URL.format(column_id=COLUMN_ID), timeout)
+    episodes: list[Episode] = []
+    for row in (payload.get("data") or {}).get("list") or []:
+        title, url = str(row.get("title") or ""), str(row.get("url") or "")
+        if "新闻周刊" not in title or not url:
+            continue
+        try:
+            date = datetime.strptime(str(row.get("time") or "")[:10], "%Y-%m-%d")
+        except ValueError:
+            continue
+        episodes.append(Episode(title, url, date, str(row.get("guid") or "") or None, str(row.get("length") or "") or None))
+    if not episodes:
+        raise CctvError("央视列表接口没有返回《新闻周刊》节目。")
+    return sorted(episodes, key=lambda item: item.date, reverse=True)[:limit]
 
 
 def extract_guid(detail_html: str) -> str:
@@ -192,14 +158,6 @@ def parse_duration(value: object) -> float:
         return float(text)
     except ValueError:
         return 0
-
-
-def get_master_url(info: dict) -> str:
-    manifest = info.get("manifest") or {}
-    url = manifest.get("hls_h5e_url") or info.get("hls_url")
-    if not isinstance(url, str) or not url:
-        raise CctvError("视频接口没有提供可用的 HLS 播放列表地址。")
-    return url
 
 
 def parse_attrs(value: str) -> dict[str, str]:
@@ -248,11 +206,12 @@ def rewrite_to_clean_hls_cdn(variants: list[StreamVariant], hls_url: str | None)
     return rewritten
 
 
-def bundled_ffprobe_path() -> str:
-    """Return the packaged ffprobe path, or the system command."""
+def bundled_tool_path(name: str) -> str:
+    """Return a packaged helper path, or its system command name."""
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    candidate = bundle_root / "bin" / "ffprobe.exe"
-    return str(candidate) if candidate.is_file() else "ffprobe"
+    executable = f"{name}.exe" if sys.platform == "win32" else name
+    candidate = bundle_root / "bin" / executable
+    return str(candidate) if candidate.is_file() else name
 
 
 def probe_variant_resolution(variant: StreamVariant, ffprobe_path: str, timeout: float = 10) -> tuple[int, int] | None:
@@ -263,7 +222,14 @@ def probe_variant_resolution(variant: StreamVariant, ffprobe_path: str, timeout:
         "-show_entries", "stream=width,height", "-of", "csv=p=0", variant.url,
     ]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=max(3, timeout), check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=max(3, timeout),
+            check=False,
+            **hidden_subprocess_options(),
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     match = re.search(r"(\d+)\s*,\s*(\d+)", result.stdout)
@@ -360,13 +326,6 @@ def desktop_path() -> Path:
     return Path.home() / "Desktop"
 
 
-def bundled_ffmpeg_path() -> str:
-    """Return the packaged FFmpeg path when running from a PyInstaller build."""
-    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    candidate = bundle_root / "bin" / "ffmpeg.exe"
-    return str(candidate) if candidate.is_file() else "ffmpeg"
-
-
 ProgressCallback = Callable[[int], None]
 
 
@@ -391,7 +350,15 @@ def download_variant(
     if max_seconds is not None:
         command.extend(["-t", str(max_seconds)])
     command.extend(["-c", "copy", str(temp_path)])
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **hidden_subprocess_options(),
+    )
     try:
         assert process.stdout is not None
         for line in process.stdout:

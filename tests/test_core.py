@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cctv_news_weekly_core import CctvError, StreamVariant, align_variants, choose_variant, desktop_path, next_available_path, parse_duration, parse_master_playlist, rewrite_to_clean_hls_cdn, safe_filename
+from cctv_news_weekly_core import CctvError, StreamVariant, align_variants, bundled_tool_path, choose_variant, desktop_path, hidden_subprocess_options, next_available_path, parse_duration, parse_master_playlist, rewrite_to_clean_hls_cdn, safe_filename
 
 
 def test_parse_master_playlist_and_quality_labels():
@@ -59,3 +59,15 @@ def test_align_variants_uses_measured_resolution(monkeypatch):
     monkeypatch.setattr("cctv_news_weekly_core.probe_variant_resolution", lambda variant, *_: measured[variant.url.split("/")[-1].split(".")[0]])
     aligned = align_variants(variants, "ffprobe")
     assert [(item.quality, item.resolution) for item in aligned] == [("流畅", "480x270"), ("标清", "640x360")]
+
+
+def test_windows_subprocesses_are_hidden(monkeypatch):
+    monkeypatch.setattr("cctv_news_weekly_core.sys.platform", "win32")
+    options = hidden_subprocess_options()
+    assert options["creationflags"] != 0
+    assert options["startupinfo"].dwFlags != 0
+
+
+def test_bundled_tool_falls_back_to_system_command(monkeypatch):
+    monkeypatch.setattr("cctv_news_weekly_core.sys.platform", "win32")
+    assert bundled_tool_path("ffprobe") == "ffprobe"

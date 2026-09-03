@@ -16,7 +16,7 @@ if sys.platform == "win32":
             os.add_dll_directory(str(_dll_dir))
 
 try:
-    from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+    from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtWidgets import (
         QApplication, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
@@ -31,46 +31,32 @@ except (ImportError, OSError) as exc:
 
 from cctv_news_weekly_core import (
     CctvError, DownloadCanceled, Episode, ResolvedEpisode, StreamVariant,
-    bundled_ffmpeg_path, bundled_ffprobe_path, desktop_path, download_variant, list_episodes, next_available_path,
+    bundled_tool_path, desktop_path, download_variant, list_episodes, next_available_path,
     resolve_episode, safe_filename,
 )
 
 
-class ListSignals(QObject):
-    loaded = Signal(object)
+class TaskSignals(QObject):
+    result = Signal(object)
     error = Signal(str)
 
 
-class ListWorker(QRunnable):
-    def __init__(self) -> None:
+class TaskWorker(QRunnable):
+    def __init__(self, function, *args) -> None:
         super().__init__()
-        self.signals = ListSignals()
+        self.function = function
+        self.args = args
+        self.signals = TaskSignals()
 
     @Slot()
     def run(self) -> None:
         try:
-            self.signals.loaded.emit(list_episodes(20))
+            self.signals.result.emit(self.function(*self.args))
         except Exception as exc:
-            self.signals.error.emit(str(exc))
-
-
-class ResolveSignals(QObject):
-    loaded = Signal(object)
-    error = Signal(str)
-
-
-class ResolveWorker(QRunnable):
-    def __init__(self, episode: Episode) -> None:
-        super().__init__()
-        self.episode = episode
-        self.signals = ResolveSignals()
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            self.signals.loaded.emit(resolve_episode(self.episode, timeout=12, ffprobe_path=bundled_ffprobe_path()))
-        except Exception as exc:
-            self.signals.error.emit(str(exc))
+            try:
+                self.signals.error.emit(str(exc))
+            except RuntimeError:
+                pass
 
 
 class DownloadSignals(QObject):
@@ -94,7 +80,7 @@ class DownloadWorker(QRunnable):
         try:
             result = download_variant(
                 self.variant, self.output, self.signals.progress.emit,
-                self.cancel_event, self.duration, bundled_ffmpeg_path(),
+                self.cancel_event, self.duration, bundled_tool_path("ffmpeg"),
             )
             self.signals.finished.emit(str(result))
         except DownloadCanceled:
@@ -112,8 +98,10 @@ class MainWindow(QMainWindow):
         self.episodes: list[Episode] = []
         self.resolved: ResolvedEpisode | None = None
         self.download_worker: DownloadWorker | None = None
-        self.resolve_worker: ResolveWorker | None = None
+        self.resolve_worker: TaskWorker | None = None
         self.resolve_generation = 0
+        self.resolve_cache: dict[str, ResolvedEpisode] = {}
+        self.resolving_key: str | None = None
         self._build_ui()
         self.refresh_episodes()
 
@@ -172,19 +160,21 @@ class MainWindow(QMainWindow):
             return
         self.refresh_button.setEnabled(False)
         self.status_label.setText("正在获取最近 20 期…")
-        worker = ListWorker()
-        worker.signals.loaded.connect(self.episodes_loaded)
+        worker = TaskWorker(list_episodes, 20)
+        worker.signals.result.connect(self.episodes_loaded)
         worker.signals.error.connect(self.operation_error)
         self.pool.start(worker)
 
     @Slot(object)
     def episodes_loaded(self, episodes: list[Episode]) -> None:
         self.episodes = episodes
+        self.table.blockSignals(True)
         self.table.setRowCount(len(episodes))
         for row, episode in enumerate(episodes):
             self.table.setItem(row, 0, QTableWidgetItem(episode.date.strftime("%Y-%m-%d")))
             self.table.setItem(row, 1, QTableWidgetItem(episode.title))
             self.table.setItem(row, 2, QTableWidgetItem(episode.duration or "未知"))
+        self.table.blockSignals(False)
         self.refresh_button.setEnabled(True)
         self.status_label.setText(f"已加载 {len(episodes)} 期")
         if episodes:
@@ -195,20 +185,42 @@ class MainWindow(QMainWindow):
         row = self.table.currentRow()
         if row < 0 or row >= len(self.episodes) or self.download_worker:
             return
+        selected = self.episodes[row]
+        selected_key = selected.guid or selected.url
+        if self.resolving_key == selected_key:
+            return
         self.resolved = None
         self.resolve_generation += 1
         generation = self.resolve_generation
         self.quality_combo.clear()
         self.download_button.setEnabled(False)
         self.status_label.setText("正在解析视频清晰度…")
-        worker = ResolveWorker(self.episodes[row])
+        QTimer.singleShot(250, lambda expected=generation, selected=row: self.start_resolve(selected, expected))
+
+    def start_resolve(self, row: int, generation: int) -> None:
+        if generation != self.resolve_generation or row != self.table.currentRow():
+            return
+        episode = self.episodes[row]
+        key = episode.guid or episode.url
+        cached = self.resolve_cache.get(key)
+        if cached:
+            self.episode_resolved(cached, generation)
+            return
+        if self.resolving_key == key:
+            return
+        self.resolving_key = key
+        worker = TaskWorker(resolve_episode, episode, 12, bundled_tool_path("ffprobe"))
         self.resolve_worker = worker
-        worker.signals.loaded.connect(lambda resolved, expected=generation: self.episode_resolved(resolved, expected))
-        worker.signals.error.connect(lambda message, expected=generation: self.resolve_error(message, expected))
+        worker.signals.result.connect(lambda resolved, expected=generation, cache_key=key: self.episode_resolved(resolved, expected, cache_key))
+        worker.signals.error.connect(lambda message, expected=generation, cache_key=key: self.resolve_error(message, expected, cache_key))
         self.pool.start(worker)
 
     @Slot(object)
-    def episode_resolved(self, resolved: ResolvedEpisode, generation: int | None = None) -> None:
+    def episode_resolved(self, resolved: ResolvedEpisode, generation: int | None = None, cache_key: str | None = None) -> None:
+        if cache_key:
+            self.resolve_cache[cache_key] = resolved
+            if self.resolving_key == cache_key:
+                self.resolving_key = None
         if generation is not None and generation != self.resolve_generation:
             return
         self.resolve_worker = None
@@ -222,7 +234,9 @@ class MainWindow(QMainWindow):
         self.status_label.setText("已准备下载")
 
     @Slot(str, int)
-    def resolve_error(self, message: str, generation: int) -> None:
+    def resolve_error(self, message: str, generation: int, cache_key: str | None = None) -> None:
+        if cache_key and self.resolving_key == cache_key:
+            self.resolving_key = None
         if generation != self.resolve_generation:
             return
         self.resolve_worker = None

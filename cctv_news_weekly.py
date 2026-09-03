@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cctv_news_weekly_core import (
-    CctvError, Episode, bundled_ffprobe_path, choose_variant, download_variant, list_episodes,
+    CctvError, Episode, bundled_tool_path, choose_variant, download_variant, list_episodes,
     next_available_path, resolve_episode, safe_filename,
 )
 
@@ -40,7 +40,7 @@ def main() -> int:
             if not episodes:
                 raise CctvError("没有找到《新闻周刊》节目。")
             episode = episodes[0]
-        resolved = resolve_episode(episode, args.timeout, args.ffprobe or bundled_ffprobe_path())
+        resolved = resolve_episode(episode, args.timeout, args.ffprobe or bundled_tool_path("ffprobe"))
         payload = {
             "title": resolved.info.get("title") or episode.title,
             "date": episode.date.strftime("%Y-%m-%d") if episode.date.year > 1 else None,

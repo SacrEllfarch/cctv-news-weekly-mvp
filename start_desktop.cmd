@@ -11,5 +11,4 @@ if not exist ".venv\Scripts\python.exe" (
   )
   ".venv\Scripts\python.exe" -m pip install -r requirements-desktop.txt
 )
-".venv\Scripts\python.exe" desktop_app.py
-if errorlevel 1 pause
+start "" ".venv\Scripts\pythonw.exe" desktop_app.py
